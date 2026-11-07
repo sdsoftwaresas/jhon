@@ -20,8 +20,10 @@ curl -fsSL https://raw.githubusercontent.com/sdsoftwaresas/jhon/main/install.sh 
 ```
 
 It needs curl (or wget), tar, gzip and sha256sum (or shasum). Without
-`JHON_VERSION` it installs the latest release, never a pre-release. It
-checks the tarball's sha256 and, when `cosign` is installed, its keyless
+`JHON_VERSION` it installs the latest release, never a pre-release; while
+only pre-releases are published it says so and installs nothing (pick one
+on the [releases page](https://github.com/sdsoftwaresas/jhon/releases) and
+set `JHON_VERSION`). It checks the tarball's sha256 and, when `cosign` is installed, its keyless
 signature against this repository's release workflow; without cosign it
 says the signature was not checked (`jhon update` verifies signatures
 itself, no cosign needed). Any failed check installs nothing. Then the

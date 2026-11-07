@@ -43,6 +43,25 @@ fetch() {
     fi
 }
 
+# fetch_latest FILE: /releases/latest's JSON to FILE. GitHub answers 404
+# while only pre-releases are published, which is said as such; any other
+# failure (the network, a 5xx, a rate limit) shows the tool's own error.
+fetch_latest() {
+    err="$TMP/latest.err"
+    if have curl; then
+        code=$(curl -fsSL --proto '=https' -w '%{http_code}' -o "$1" "$LATEST_URL" 2>"$err") && return 0
+    elif have wget; then
+        wget -S --https-only -O "$1" "$LATEST_URL" 2>"$err" && return 0
+        code=$(sed -n 's/.*HTTP\/[0-9.]* \([0-9][0-9][0-9]\).*/\1/p' "$err" | sed -n '$p')
+    else
+        die "curl or wget is required"
+    fi
+    [ "$code" != 404 ] ||
+        die "no stable release is published yet (only pre-releases); pick one at https://github.com/${REPO}/releases and run: curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | JHON_VERSION=<version> sh"
+    cat "$err" >&2
+    die "cannot read the latest release from $LATEST_URL"
+}
+
 # valid_version V: X.Y.Z or X.Y.Z-rc.N, no leading zeros. The case guard
 # refuses a newline too, which grep, reading line by line, would let through.
 valid_version() {
@@ -69,13 +88,14 @@ else
     die "sha256sum or shasum is required"
 fi
 
+TMP=$(mktemp -d "${TMPDIR:-/tmp}/jhon-install.XXXXXX")
 if [ -n "${JHON_VERSION:-}" ]; then
     version=$JHON_VERSION
     valid_version "$version" || die "JHON_VERSION must be X.Y.Z or X.Y.Z-rc.N (no 'v', no leading zeros): $version"
 else
     # /releases/latest never names a pre-release.
-    tag=$(fetch "$LATEST_URL" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1) ||
-        die "cannot read the latest release from $LATEST_URL"
+    fetch_latest "$TMP/latest.json"
+    tag=$(sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$TMP/latest.json" | head -n 1)
     version=${tag#v}
     [ -n "$tag" ] && [ "$tag" = "v$version" ] || die "the latest release has no usable tag: '$tag'"
     valid_version "$version" || die "the latest release's tag is not vX.Y.Z: $tag"
@@ -84,7 +104,6 @@ fi
 
 asset="jhon-${version}-linux-${arch}.tar.gz"
 base="${DOWNLOAD_URL}/v${version}"
-TMP=$(mktemp -d "${TMPDIR:-/tmp}/jhon-install.XXXXXX")
 
 say "downloading $asset (v$version)"
 for f in "$asset" "$asset.sha256" "$asset.sigstore.json"; do

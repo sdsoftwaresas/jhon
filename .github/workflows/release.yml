@@ -16,6 +16,8 @@ on:
 # Per job: the build job signs (id-token), only publish writes (contents).
 permissions: {}
 
+# One run per tag, never cancelled: a second push of the same tag waits
+# instead of cutting a release in half (T11d).
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
@@ -29,6 +31,8 @@ jobs:
   tag:
     name: check the tag
     runs-on: ubuntu-24.04
+    # Every job has a limit: GitHub's default is 6 hours of billed time (T11d, L62).
+    timeout-minutes: 5
     permissions: {}
     outputs:
       version: ${{ steps.tag.outputs.version }}
@@ -65,7 +69,8 @@ jobs:
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
+    # rc1 built in 14m24s (amd64) and 13m30s (arm64): about twice that.
+    timeout-minutes: 35
     permissions:
       contents: read
       id-token: write
@@ -139,9 +144,11 @@ jobs:
         working-directory: src/herdr
         run: cargo clippy --all-targets --locked -- -D warnings
 
+      # The ci profile (herdr/.config/nextest.toml) kills a test hung for
+      # 5 minutes and ends the whole run at 20.
       - name: herdr tests (nextest)
         working-directory: src/herdr
-        run: cargo nextest run --locked --status-level fail --final-status-level slow --failure-output final --success-output never
+        run: cargo nextest run --profile ci --locked --status-level fail --final-status-level slow --failure-output final --success-output never
 
       - name: Build herdr-jhon (release profile, static musl)
         working-directory: src/herdr
@@ -216,6 +223,7 @@ jobs:
     name: publish ${{ github.ref_name }}
     needs: [tag, build]
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
