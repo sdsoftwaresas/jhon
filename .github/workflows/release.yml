@@ -1,0 +1,250 @@
+# Jhon's release: on a tag vX.Y.Z (or vX.Y.Z-rc.N) of this public repo, fetch
+# the private source sdsoftwaresas/jhon-agents at the same tag, build it per
+# arch on a native runner, sign each tarball with cosign keyless and publish
+# one GitHub release. The signer identity is this file at that tag:
+#   https://github.com/sdsoftwaresas/jhon/.github/workflows/release.yml@refs/tags/<tag>
+# `jhon update` (engine/internal/update/verify.go) trusts exactly that, so
+# renaming or moving this file breaks every update.
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+# Per job: the build job signs (id-token), only publish writes (contents).
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # engine/internal/update/verify.go's Issuer and IdentityPattern, verbatim.
+  SIGNER_ISSUER: https://token.actions.githubusercontent.com
+  SIGNER_IDENTITY: ^https://github\.com/sdsoftwaresas/jhon/\.github/workflows/release\.yml@refs/tags/v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-rc\.(0|[1-9]\d*))?$
+
+jobs:
+  tag:
+    name: check the tag
+    runs-on: ubuntu-24.04
+    permissions: {}
+    outputs:
+      version: ${{ steps.tag.outputs.version }}
+      prerelease: ${{ steps.tag.outputs.prerelease }}
+    steps:
+      - id: tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! printf '%s' "$TAG" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.(0|[1-9][0-9]*))?$'; then
+            echo "::error::tag $TAG is not vX.Y.Z or vX.Y.Z-rc.N (no leading zeros)"
+            exit 1
+          fi
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          case "$TAG" in
+            *-rc.*) echo "prerelease=true" >> "$GITHUB_OUTPUT" ;;
+            *) echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+  build:
+    name: build ${{ matrix.arch }}
+    needs: tag
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # Native runners: pack runs the Go tests, so no cross-compile.
+          # herdr-jhon is built for musl as herdr's own Linux releases are
+          # (herdr/.github/workflows/release.yml): static, no glibc floor.
+          - arch: amd64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      VERSION: ${{ needs.tag.outputs.version }}
+      OUT: ${{ github.workspace }}/dist-out
+      # cargo builds outside the checkout, as sync does (HerdrTarget), so
+      # pack never sees a dirty tree.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/herdr-target
+      ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-cache
+      ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/.zig-cache
+      # As herdr's release builds libghostty-vt.
+      LIBGHOSTTY_VT_OPTIMIZE: ReleaseFast
+      LIBGHOSTTY_VT_SIMD: "true"
+      # A static jhon: no glibc floor (WSL's Ubuntu 22.04, S3).
+      CGO_ENABLED: "0"
+    steps:
+      - name: Check out jhon-agents at ${{ github.ref_name }}
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: sdsoftwaresas/jhon-agents
+          ref: ${{ github.ref_name }}
+          ssh-key: ${{ secrets.JHON_AGENTS_DEPLOY_KEY }}
+          path: src
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install Go (go.mod's go line)
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: src/go.mod
+          cache: false
+
+      - name: Read herdr's Rust toolchain
+        id: rust
+        run: |
+          channel=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' src/herdr/rust-toolchain.toml)
+          test -n "$channel"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust ${{ steps.rust.outputs.channel }}
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: ${{ steps.rust.outputs.channel }}
+          targets: ${{ matrix.target }}
+          components: clippy
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: cargo-nextest
+
+      # ghostty-vt's build.rs builds libghostty-vt with Zig 0.16.0 (herdr's CI pins the same).
+      - name: Install Zig
+        uses: vercel-labs/setup-zig@83c1594f26b86da8a9a8ddd9b5ee5f3af0f96943 # v1.0.2
+        with:
+          version: 0.16.0
+
+      - name: Install Linux build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build musl-tools
+
+      # herdr's release sets this to cross-link from x86_64; on the arm64
+      # runner aarch64-linux-gnu-gcc is the native gcc.
+      - name: Set Linux aarch64 linker
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+
+      - name: herdr lint (clippy, the pinned toolchain)
+        working-directory: src/herdr
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: herdr tests (nextest)
+        working-directory: src/herdr
+        run: cargo nextest run --locked --status-level fail --final-status-level slow --failure-output final --success-output never
+
+      - name: Build herdr-jhon (release profile, static musl)
+        working-directory: src/herdr
+        run: |
+          cargo build --release --locked --target ${{ matrix.target }}
+          herdr="$CARGO_TARGET_DIR/${{ matrix.target }}/release/herdr"
+          test -x "$herdr"
+          # The program headers must be read: an error or a non-ELF fails.
+          if ! h=$(readelf -lW "$herdr" 2>&1) || ! grep -q 'Program Headers:' <<<"$h"; then
+            echo "::error::readelf cannot read $herdr: $h"; exit 1
+          fi
+          if grep -q 'program interpreter' <<<"$h"; then
+            echo "::error::herdr-jhon is dynamically linked"; exit 1
+          fi
+
+      - name: Build jhon and pack the release
+        working-directory: src
+        env:
+          JHON_SOURCE: ${{ github.workspace }}/src
+        run: |
+          go build -trimpath -o build/jhon ./engine/cmd/jhon
+          git status --porcelain
+          build/jhon release pack --version "$VERSION" --herdr "$CARGO_TARGET_DIR/${{ matrix.target }}/release/herdr" --out "$OUT"
+          tarball="$OUT/jhon-$VERSION-linux-${{ matrix.arch }}.tar.gz"
+          test -f "$tarball" && test -f "$tarball.sha256"
+          (cd "$OUT" && sha256sum -c "$(basename "$tarball").sha256")
+          # Both binaries in the tarball are static (no program interpreter).
+          check=$(mktemp -d)
+          tar -xzf "$tarball" -C "$check" build/jhon build/herdr
+          for b in "$check/build/jhon" "$check/build/herdr"; do
+            if ! h=$(readelf -lW "$b" 2>&1) || ! grep -q 'Program Headers:' <<<"$h"; then
+              echo "::error::readelf cannot read $b: $h"; exit 1
+            fi
+            if grep -q 'program interpreter' <<<"$h"; then
+              echo "::error::$(basename "$b") in the tarball is dynamically linked"; exit 1
+            fi
+          done
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+
+      - name: Sign and verify the tarball
+        run: |
+          tarball="$OUT/jhon-$VERSION-linux-${{ matrix.arch }}.tar.gz"
+          cosign sign-blob --yes --bundle "$tarball.sigstore.json" "$tarball"
+          cosign verify-blob --bundle "$tarball.sigstore.json" \
+            --certificate-identity-regexp "$SIGNER_IDENTITY" \
+            --certificate-oidc-issuer "$SIGNER_ISSUER" \
+            "$tarball"
+
+      - name: Release notes from the CHANGELOG
+        if: matrix.arch == 'amd64'
+        run: |
+          # The `## [X.Y.Z]` section (or `## X.Y.Z`), up to the next `## `.
+          # POSIX awk only: Ubuntu's default is mawk.
+          awk -v v="$VERSION" '
+            /^## / { if (on) exit; h=$0; sub(/^## \[?/, "", h); sub(/\].*$/, "", h); sub(/ .*$/, "", h); on = (h == v); next }
+            on { print }
+          ' src/CHANGELOG.md > "$OUT/notes.md"
+          if [ ! -s "$OUT/notes.md" ]; then
+            echo "Jhon $VERSION." > "$OUT/notes.md"
+          fi
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ matrix.arch }}
+          path: dist-out/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: publish ${{ github.ref_name }}
+    needs: [tag, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist-out
+          merge-multiple: true
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.tag.outputs.version }}
+          PRERELEASE: ${{ needs.tag.outputs.prerelease }}
+        run: |
+          cd dist-out
+          assets=()
+          for arch in amd64 arm64; do
+            for ext in tar.gz tar.gz.sha256 tar.gz.sigstore.json; do
+              f="jhon-$VERSION-linux-$arch.$ext"
+              test -f "$f" || { echo "::error::missing $f"; exit 1; }
+              assets+=("$f")
+            done
+          done
+          # An rc must be a pre-release: /releases/latest never offers one (S11).
+          flags=()
+          if [ "$PRERELEASE" = true ]; then
+            flags+=(--prerelease --latest=false)
+          fi
+          gh release create "$TAG" "${assets[@]}" \
+            --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "Jhon $VERSION" --notes-file notes.md "${flags[@]}"
