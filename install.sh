@@ -2,7 +2,7 @@
 # Jhon's installer:
 #   curl -fsSL https://raw.githubusercontent.com/sdsoftwaresas/jhon/main/install.sh | sh
 # A specific release:
-#   curl -fsSL https://raw.githubusercontent.com/sdsoftwaresas/jhon/main/install.sh | JHON_VERSION=0.1.0 sh
+#   curl -fsSL https://raw.githubusercontent.com/sdsoftwaresas/jhon/main/install.sh | JHON_VERSION=0.2.0 sh
 #
 # Linux only (amd64, arm64; WSL is Linux). Needs curl or wget, tar, gzip and
 # sha256sum or shasum. It verifies the release's sha256 and, when cosign is
@@ -70,7 +70,7 @@ valid_version() {
 }
 
 os=$(uname -s)
-[ "$os" = "Linux" ] || die "Jhon v0.1 runs on Linux only (this is $os); on Windows use WSL"
+[ "$os" = "Linux" ] || die "Jhon runs on Linux only (this is $os); on Windows use WSL"
 case $(uname -m) in
     x86_64 | amd64) arch=amd64 ;;
     aarch64 | arm64) arch=arm64 ;;

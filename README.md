@@ -16,7 +16,7 @@ curl -fsSL https://raw.githubusercontent.com/sdsoftwaresas/jhon/main/install.sh 
 A specific release (`X.Y.Z`, or a pre-release `X.Y.Z-rc.N`):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/sdsoftwaresas/jhon/main/install.sh | JHON_VERSION=0.1.0 sh
+curl -fsSL https://raw.githubusercontent.com/sdsoftwaresas/jhon/main/install.sh | JHON_VERSION=0.2.0 sh
 ```
 
 It needs curl (or wget), tar, gzip and sha256sum (or shasum). Without
@@ -33,7 +33,7 @@ opens when a terminal is attached.
 
 ### Windows (WSL)
 
-Jhon v0.1 runs on Windows inside WSL 2; native Windows comes in v0.2. From
+Jhon runs on Windows inside WSL 2; native Windows is not supported yet. From
 PowerShell (Windows PowerShell 5.1 or PowerShell 7):
 
 ```powershell

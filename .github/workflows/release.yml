@@ -60,16 +60,12 @@ jobs:
       matrix:
         include:
           # Native runners: pack runs the Go tests, so no cross-compile.
-          # herdr-jhon is built for musl as herdr's own Linux releases are
-          # (herdr/.github/workflows/release.yml): static, no glibc floor.
           - arch: amd64
             runner: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
           - arch: arm64
             runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
     runs-on: ${{ matrix.runner }}
-    # rc1 built in 14m24s (amd64) and 13m30s (arm64): about twice that.
+    # rc1 built in 14m24s (amd64) and 13m30s (arm64) when it built more than jhon.
     timeout-minutes: 35
     permissions:
       contents: read
@@ -77,14 +73,6 @@ jobs:
     env:
       VERSION: ${{ needs.tag.outputs.version }}
       OUT: ${{ github.workspace }}/dist-out
-      # cargo builds outside the checkout, as sync does (HerdrTarget), so
-      # pack never sees a dirty tree.
-      CARGO_TARGET_DIR: ${{ github.workspace }}/herdr-target
-      ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-cache
-      ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/.zig-cache
-      # As herdr's release builds libghostty-vt.
-      LIBGHOSTTY_VT_OPTIMIZE: ReleaseFast
-      LIBGHOSTTY_VT_SIMD: "true"
       # A static jhon: no glibc floor (WSL's Ubuntu 22.04, S3).
       CGO_ENABLED: "0"
     steps:
@@ -104,66 +92,6 @@ jobs:
           go-version-file: src/go.mod
           cache: false
 
-      - name: Read herdr's Rust toolchain
-        id: rust
-        run: |
-          channel=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' src/herdr/rust-toolchain.toml)
-          test -n "$channel"
-          echo "channel=$channel" >> "$GITHUB_OUTPUT"
-
-      - name: Install Rust ${{ steps.rust.outputs.channel }}
-        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
-        with:
-          toolchain: ${{ steps.rust.outputs.channel }}
-          targets: ${{ matrix.target }}
-          components: clippy
-
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
-        with:
-          tool: cargo-nextest
-
-      # ghostty-vt's build.rs builds libghostty-vt with Zig 0.16.0 (herdr's CI pins the same).
-      - name: Install Zig
-        uses: vercel-labs/setup-zig@83c1594f26b86da8a9a8ddd9b5ee5f3af0f96943 # v1.0.2
-        with:
-          version: 0.16.0
-
-      - name: Install Linux build tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake ninja-build musl-tools
-
-      # herdr's release sets this to cross-link from x86_64; on the arm64
-      # runner aarch64-linux-gnu-gcc is the native gcc.
-      - name: Set Linux aarch64 linker
-        if: matrix.target == 'aarch64-unknown-linux-musl'
-        run: echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
-
-      - name: herdr lint (clippy, the pinned toolchain)
-        working-directory: src/herdr
-        run: cargo clippy --all-targets --locked -- -D warnings
-
-      # The ci profile (herdr/.config/nextest.toml) kills a test hung for
-      # 5 minutes and ends the whole run at 20.
-      - name: herdr tests (nextest)
-        working-directory: src/herdr
-        run: cargo nextest run --profile ci --locked --status-level fail --final-status-level slow --failure-output final --success-output never
-
-      - name: Build herdr-jhon (release profile, static musl)
-        working-directory: src/herdr
-        run: |
-          cargo build --release --locked --target ${{ matrix.target }}
-          herdr="$CARGO_TARGET_DIR/${{ matrix.target }}/release/herdr"
-          test -x "$herdr"
-          # The program headers must be read: an error or a non-ELF fails.
-          if ! h=$(readelf -lW "$herdr" 2>&1) || ! grep -q 'Program Headers:' <<<"$h"; then
-            echo "::error::readelf cannot read $herdr: $h"; exit 1
-          fi
-          if grep -q 'program interpreter' <<<"$h"; then
-            echo "::error::herdr-jhon is dynamically linked"; exit 1
-          fi
-
       - name: Build jhon and pack the release
         working-directory: src
         env:
@@ -171,21 +99,20 @@ jobs:
         run: |
           go build -trimpath -o build/jhon ./engine/cmd/jhon
           git status --porcelain
-          build/jhon release pack --version "$VERSION" --herdr "$CARGO_TARGET_DIR/${{ matrix.target }}/release/herdr" --out "$OUT"
+          build/jhon release pack --version "$VERSION" --out "$OUT"
           tarball="$OUT/jhon-$VERSION-linux-${{ matrix.arch }}.tar.gz"
           test -f "$tarball" && test -f "$tarball.sha256"
           (cd "$OUT" && sha256sum -c "$(basename "$tarball").sha256")
-          # Both binaries in the tarball are static (no program interpreter).
+          # The binary in the tarball is static (no program interpreter).
           check=$(mktemp -d)
-          tar -xzf "$tarball" -C "$check" build/jhon build/herdr
-          for b in "$check/build/jhon" "$check/build/herdr"; do
-            if ! h=$(readelf -lW "$b" 2>&1) || ! grep -q 'Program Headers:' <<<"$h"; then
-              echo "::error::readelf cannot read $b: $h"; exit 1
-            fi
-            if grep -q 'program interpreter' <<<"$h"; then
-              echo "::error::$(basename "$b") in the tarball is dynamically linked"; exit 1
-            fi
-          done
+          tar -xzf "$tarball" -C "$check" build/jhon
+          b="$check/build/jhon"
+          if ! h=$(readelf -lW "$b" 2>&1) || ! grep -q 'Program Headers:' <<<"$h"; then
+            echo "::error::readelf cannot read $b: $h"; exit 1
+          fi
+          if grep -q 'program interpreter' <<<"$h"; then
+            echo "::error::$(basename "$b") in the tarball is dynamically linked"; exit 1
+          fi
 
       - name: Install cosign
         uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3

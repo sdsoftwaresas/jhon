@@ -1,12 +1,12 @@
 # Jhon's installer for Windows, through WSL:
 #   irm https://raw.githubusercontent.com/sdsoftwaresas/jhon/main/install.ps1 | iex
 # A specific release:
-#   $env:JHON_VERSION = '0.1.0'; irm https://raw.githubusercontent.com/sdsoftwaresas/jhon/main/install.ps1 | iex
+#   $env:JHON_VERSION = '0.2.0'; irm https://raw.githubusercontent.com/sdsoftwaresas/jhon/main/install.ps1 | iex
 # A distro other than the default one:
 #   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/sdsoftwaresas/jhon/main/install.ps1))) -Distro Ubuntu-24.04
 #
-# Jhon v0.1 runs on Linux; on Windows it runs inside WSL 2 (native Windows
-# comes in v0.2). This script installs nothing on Windows: it checks that WSL
+# Jhon runs on Linux; on Windows it runs inside WSL 2 (native Windows is
+# not supported yet). This script installs nothing on Windows: it checks that WSL
 # is present, that the distro exists and runs as WSL 2, that it is Linux and
 # has curl, then runs the Linux installer (install.sh) inside it. With a
 # console attached, wsl.exe gives the distro a terminal, so install.sh opens
@@ -57,7 +57,7 @@ param(
         $env:WSL_UTF8 = '1'
 
         if (-not (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {
-            Fail ("WSL is not installed. Jhon v0.1 runs on Windows inside WSL 2 (native Windows comes in v0.2).`n" +
+            Fail ("WSL is not installed. Jhon runs on Windows inside WSL 2 (native Windows is not supported yet).`n" +
                 "  Install it from an administrator PowerShell, then restart Windows:`n" +
                 "    wsl --install`n" +
                 "  Then run this installer again.")
@@ -138,7 +138,7 @@ param(
         Write-Host 'Start Jhon from PowerShell:'
         Write-Host "  wsl -d $name -e jhon start"
         Write-Host "or open $name and run: jhon start"
-        Write-Host 'Native Windows (no WSL) comes in Jhon v0.2.'
+        Write-Host 'Native Windows (no WSL) is not supported yet.'
     }
 
     $exitCode = 0
